@@ -1,0 +1,4 @@
+{
+  "api_base": "http://127.0.0.1:8317/v1",
+  "secret_id": "REPLACE_WITH_YOUR_SILLYTAVERN_CUSTOM_SECRET_ID"
+}

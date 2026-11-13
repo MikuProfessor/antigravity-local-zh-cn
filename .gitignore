@@ -1,0 +1,29 @@
+auth/
+runtime/
+config.yaml
+vendor/
+__pycache__/
+logs/
+
+# Local secrets and editor recovery files
+.env
+.env.*
+!.env.example
+*.swp
+*.swo
+*.swn
+*~
+*.bak
+.DS_Store
+
+# Generated or proprietary application artifacts
+*.app/
+*.asar
+*.dmg
+*.zip
+*.tar.gz
+candidate/
+original-resources/
+official-backup/
+node_modules/
+*.pyc

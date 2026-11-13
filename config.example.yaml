@@ -1,0 +1,32 @@
+# CLIProxyAPI v8 example. Copy to config.yaml and replace both placeholders.
+# Actual credentials belong in ignored local config/auth files only.
+config-version: 8
+server:
+  host: "127.0.0.1"
+  port: 8317
+  max-request-body-bytes: 10485760
+  shutdown-timeout: 30
+  discovery:
+    enabled: false
+access:
+  api-keys:
+    - "REPLACE_WITH_A_RANDOM_LOCAL_API_KEY"
+management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+oauth:
+  auth-dir: "/ABSOLUTE/PATH/TO/PROJECT/auth"
+  providers:
+    antigravity:
+      antigravity-credits: false
+observability:
+  logs:
+    debug: false
+    logging-to-file: true
+    request-log: false
+    logs-max-total-size-mb: 20
+  usage:
+    usage-statistics-enabled: false
+plugins:
+  enabled: false
