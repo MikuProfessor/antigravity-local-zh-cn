@@ -1,4 +1,4 @@
-# Antigravity 本机工具集
+# Antigravity 本机工具集（汉化）
 
 保存 macOS 上的 Antigravity 本机接口启停脚本、SillyTavern 连接验证工具，以及独立客户端的简体中文界面补丁构建源码。
 
