@@ -1,4 +1,4 @@
-"""Build Antigravity 2.29.0 Chinese UI files without installing or launching them.
+"""Build compatible Antigravity App Chinese UI files without installing or launching them.
 
 The original application is read-only input. All generated candidates, resource
 backups, and the review report are written beneath --output. macOS installation
@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import plistlib
+import re
 import shutil
 import struct
 import subprocess
@@ -18,14 +19,55 @@ import subprocess
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = ROOT.parent.parent / 'runtime/antigravity-zh-cn-build'
 COMMIT = '229658784a100e024325b6bb2ae49f574eae86d1'
+LOCAL_UPDATE_MENU_FRAGMENT = r'''
+function agAddChineseUpdateMenu(menu) {
+    if (process.platform !== 'darwin') return;
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const launcher = path.join(electron_1.app.getPath('home'), 'Library', 'Application Support', 'Antigravity 中文更新', 'check-updates');
+    try {
+        fs.accessSync(launcher, fs.constants.X_OK);
+        if (!fs.statSync(launcher).isFile()) return;
+    } catch {
+        return;
+    }
+    const appSubmenu = menu.items[0]?.submenu;
+    if (!appSubmenu || menu.getMenuItemById('check-chinese-updates')) return;
+    appSubmenu.insert(2, new electron_1.MenuItem({
+        id: 'check-chinese-updates',
+        label: '检查汉化更新…',
+        click: () => {
+            const reportError = () => electron_1.dialog.showErrorBox('无法检查汉化更新', '请重新启用汉化更新后重试。');
+            try {
+                const child = require('node:child_process').spawn(launcher, [], {
+                    shell: false,
+                    detached: true,
+                    stdio: 'ignore',
+                    cwd: electron_1.app.getPath('home'),
+                });
+                child.once('error', reportError);
+                child.unref();
+            } catch {
+                reportError();
+            }
+        },
+    }));
+}
+'''
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
 def unpack(data):
     _, header_size, _, json_size = struct.unpack('<4I', data[:16])
+    require(16 + json_size <= 8 + header_size <= len(data), 'Invalid ASAR header bounds')
     return json.loads(data[16:16 + json_size]), 8 + header_size
 
 
@@ -40,12 +82,14 @@ def entries(node, prefix=''):
 
 def file_bytes(data, base, entry):
     start = base + int(entry['offset'])
-    return data[start:start + entry['size']]
+    end = start + entry['size']
+    require(base <= start <= end <= len(data), 'Invalid ASAR entry bounds')
+    return data[start:end]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--app', type=Path, required=True, help='Path to an unmodified official Antigravity 2.29.0 .app bundle (read only)')
+    parser.add_argument('--app', type=Path, required=True, help='Path to an unmodified official Antigravity .app bundle (read only)')
     parser.add_argument('--output', type=Path, default=DEFAULT_OUTPUT, help='Build output directory; defaults to the project runtime/antigravity-zh-cn-build directory')
     parser.add_argument('--node', default=shutil.which('node'), help='Node.js executable used only for --check; defaults to node from PATH')
     args = parser.parse_args()
@@ -65,10 +109,14 @@ def main():
     original = source.read_bytes()
     plist_bytes = (app / 'Contents/Info.plist').read_bytes()
     plist = plistlib.loads(plist_bytes)
-    assert plist['CFBundleShortVersionString'] == '2.29.0'
+    version = plist['CFBundleShortVersionString']
+    require(plist.get('CFBundleIdentifier') == 'com.google.antigravity', 'Expected the official Antigravity App bundle identifier')
+    require(re.fullmatch(r'(0|[1-9]\d*)(\.(0|[1-9]\d*)){2}', version), 'Expected a stable client version')
+    integrity = plist['ElectronAsarIntegrity']['Resources/app.asar']
+    require(integrity.get('algorithm') == 'SHA256', 'Unsupported ASAR integrity algorithm')
     header, base = unpack(original)
     json_size = struct.unpack('<I', original[12:16])[0]
-    assert digest(original[16:16 + json_size]) == plist['ElectronAsarIntegrity']['Resources/app.asar']['hash']
+    require(digest(original[16:16 + json_size]) == integrity['hash'], 'Original ASAR header checksum mismatch')
     items = dict(entries(header))
     locale = json.loads((ROOT / 'source/zh-CN.json').read_text())
     engine = (ROOT / 'source/engine.jsfrag').read_text()
@@ -83,24 +131,26 @@ def main():
     menu_engine = menu_engine.replace('MENU_DATA_PLACEHOLDER', json.dumps(menu_labels, ensure_ascii=False))
     preload = file_bytes(original, base, items['dist/preload.js']).decode()
     menu = file_bytes(original, base, items['dist/menu.js']).decode()
-    assert preload.count('const updaterAPI = {') == 1
-    assert menu.count('// Re-apply the menu so the change takes effect.') == 1
-    assert 'antigravity-i18n:begin' not in preload + menu
+    require(preload.count('const updaterAPI = {') == 1, 'Unsupported client preload layout')
+    require(menu.count('// Re-apply the menu so the change takes effect.') == 1, 'Unsupported client menu layout')
+    require('antigravity-i18n:begin' not in preload + menu, 'This client already has a language patch')
     patched_preload = preload.replace('const updaterAPI = {', engine + 'const updaterAPI = {')
     patched_menu = menu.replace('// Re-apply the menu so the change takes effect.', 'try { translateMenu(menu); } catch (error) { console.warn("Chinese menu translation failed", error); }\n    // Re-apply the menu so the change takes effect.') + '\n' + menu_engine + '\n'
     # The macOS updater dispatches by its English label. Resolve translated
     # display labels back to the original key without changing update actions.
     update_labels = {menu_labels[key]: key for key in ('Check for Updates', 'Checking for Updates...', 'Downloading Update...', 'Restart to Update')}
-    assert patched_menu.count('updater_1.updateActions[menuItem.label]') == 1
+    require(patched_menu.count('updater_1.updateActions[menuItem.label]') == 1, 'Unsupported client update menu layout')
     patched_menu = patched_menu.replace('updater_1.updateActions[menuItem.label]', 'updater_1.updateActions[agOriginalUpdateLabel(menuItem.label)]')
     patched_menu += '\nfunction agOriginalUpdateLabel(label) {\n    const labels = ' + json.dumps(update_labels, ensure_ascii=False) + ';\n    return labels[label] || label;\n}\n'
+    patched_menu = patched_menu.replace('// Re-apply the menu so the change takes effect.', 'agAddChineseUpdateMenu(menu);\n    // Re-apply the menu so the change takes effect.')
+    patched_menu += '\n' + LOCAL_UPDATE_MENU_FRAGMENT
     replacements = {'dist/preload.js': patched_preload.encode(), 'dist/menu.js': patched_menu.encode()}
     for folder in (out, backup, out / 'dist'):
         folder.mkdir(parents=True, exist_ok=True)
     for name, content in [('app.asar', original), ('Info.plist', plist_bytes)]:
         backup_path = backup / name
         if backup_path.exists():
-            assert backup_path.read_bytes() == content, 'Refuse to overwrite a different backup'
+            require(backup_path.read_bytes() == content, 'Refuse to overwrite a different backup')
         else:
             backup_path.write_bytes(content)
     for name, content in replacements.items():
@@ -117,7 +167,7 @@ def main():
         entry['size'] = len(payload)
         if name in replacements and 'integrity' in entry:
             integrity = entry['integrity']
-            assert integrity['algorithm'] == 'SHA256'
+            require(integrity['algorithm'] == 'SHA256', 'Unsupported ASAR entry integrity algorithm')
             chunk = integrity['blockSize']
             integrity['hash'] = digest(payload)
             integrity['blocks'] = [digest(payload[i:i + chunk]) for i in range(0, len(payload), chunk)]
@@ -132,20 +182,20 @@ def main():
     changed = []
     for name, entry in entries(verify_header):
         if 'offset' not in entry or entry.get('unpacked'):
-            assert entry == items[name]
+            require(entry == items[name], 'An unpacked resource or link changed')
             continue
         content = file_bytes(archive, verify_base, entry)
         before = file_bytes(original, base, items[name])
         if content != before:
             changed.append(name)
-            assert content == replacements[name]
-    assert sorted(changed) == sorted(replacements)
+            require(name in replacements and content == replacements[name], 'Unexpected change to packed resource')
+    require(sorted(changed) == sorted(replacements), 'Unexpected set of modified ASAR files')
     (out / 'app.asar').write_bytes(archive)
     plist['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = digest(header_bytes)
     (out / 'Info.plist').write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_BINARY, sort_keys=False))
     report = {
         'status': 'prepared_only_not_installed_or_executed',
-        'target_version': '2.29.0',
+        'target_version': version,
         'source_repository': 'https://github.com/wadewu-ml/antigravity-i18n',
         'source_commit': COMMIT,
         'changed_archive_files': changed,
